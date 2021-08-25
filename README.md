@@ -1,1 +1,1 @@
-# Syn-bact-omics
+Code used for metagenomic and metatranscriptomics analysis.
