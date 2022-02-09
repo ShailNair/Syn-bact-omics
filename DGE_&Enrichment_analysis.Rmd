@@ -1,0 +1,511 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+#Differential Gene Enrichment (DGE) Analysis 
+We will use the deseq2 package for the differential gene (DGE) analysis
+
+For DGE analysis , we will:
+
+1.0 Format raw count table obtained from featurecounts
+2.0 Normailze the data
+3.0 Run DGE analysis
+4.0 Gene Set Enrichment Analysis (GSEA)
+
+
+#Load packages
+```{r}
+library( "DESeq2" )
+library("ggplot2")
+library("pheatmap")
+library("apeglm")
+library(RColorBrewer)
+library(tidyverse)
+library(vsn)
+library(knitr)
+
+
+
+```
+
+#1.0 Format raw count table obtained from featurecounts
+
+#Load count table
+```{r}
+countData <- read.table('~/250_450_metaT_ko.sum.txt', header = TRUE)
+
+#rownames(countData) <- countData[,1]
+
+
+head(countData)
+```
+
+#Check column names of countdata
+```{r}
+colnames(countData)
+
+#Change sample names if required. Here i have four samples. My sample starts from column 2
+names(countData)[2] <- "250.1"
+names(countData)[3] <- "250.2"
+names(countData)[4] <- "450.1"
+names(countData)[5] <- "450.2"
+colnames(countData)
+
+names <- names(countData)
+
+#check again
+colnames(countData)
+```
+
+
+#Load metadata
+```{r}
+metadata <- read.table('~/METADATA.tsv', header = TRUE)
+rownames(metadata) <- metadata[,1]
+
+metadata
+```
+It is absolutely critical that the columns of the count matrix and the rows of the metadata (information about samples) are in the same order. DESeq2 will not make guesses as to which column of the count matrix belongs to which row of the metadata, these must be provided to DESeq2 already in consistent order.
+
+
+```{r}
+
+rownames(metadata)
+colnames(countData)
+
+#Lets remove unatmatched column
+
+#countData$Geneid <- NULL
+
+```
+
+check if the rownames and column names fo the two data sets match using the below code.
+```{r}
+all(rownames(metadata) == colnames(countData))
+```
+
+2.0 Normailze the data
+
+#Before running Differential Gene analysis, we need to normalize  our data.
+#Normalization is the process of scaling raw count values to account for the “uninteresting” factors. In this way the expression levels are more comparable between and/or within samples. (For more info on normalization read https://hbctraining.github.io/DGE_workshop/lessons/02_DGE_count_normalization.html)
+ 
+
+The DESeq calculates size factors for each sample to compare the counts obtained from different samples with different sequencing depth.
+DESeq or DESeq2 performs better for between-samples comparisons
+
+
+#Construct DESEQDataSet Object
+```{r}
+
+dds <- DESeqDataSetFromMatrix(countData=countData, 
+                              colData=metadata, 
+                              design=~TYPE, tidy = TRUE)
+```
+```{r}
+#let's see what this object looks like
+dds
+```
+#Pre-filtering
+How many reads were counted for each sample ( = library sizes)?
+
+```{r eval=TRUE, echo=TRUE}
+colSums(counts(dds))
+```
+
+```{r eval=TRUE, echo=TRUE}
+colSums(counts(dds)) %>% barplot
+```
+Remove genes with no reads.
+
+```{r eval = TRUE}
+keep_genes <- rowSums(counts(dds)) > 0
+dim(dds)
+```
+
+```{r}
+dds <- dds[ keep_genes, ]
+dim(dds)
+```
+#PART-1. NORMALIZATION
+We need to normaize the DESeq object to generate normalized read counts
+
+Determine the size factors to be used for normalization
+`estimateSizeFactors()` for calculating a factor that will be 
+used to correct for sequencing depth differences.
+
+```{r}
+dds <- estimateSizeFactors(dds)
+
+sizeFactors(dds)
+```
+
+#Plot column sums according to size factor
+```{r}
+plot(sizeFactors(dds), colSums(counts(dds)))
+abline(lm(colSums(counts(dds)) ~ sizeFactors(dds) + 0))
+```
+#We can coduct hierarchical clustering and principal component analysis to explore the data.
+
+First we extract the normalized read counts
+
+```{r}
+normlzd_dds <- counts(dds, normalized=T)
+
+head(normlzd_dds)
+```
+
+
+Hierarchical clustering by TYPE
+```{r}
+plot(hclust(dist(t(normlzd_dds))), labels=colData(dds)$TYPE)
+```
+
+#Log accounts of the  samples against each other
+```{r}
+# normalized and log2-transformed read counts
+assay(dds, "log.norm.counts") <- log2(counts(dds, normalized=TRUE) + 1)
+
+par(mfrow=c(2,1)) 
+dds[, c("250.1","250.2")] %>% assay(.,  "log.norm.counts") %>% 
+    plot(., cex=.1, main = "250.1 vs. 250.2")
+dds[, c("450.1","450.2")] %>% assay(.,  "log.norm.counts") %>% 
+    plot(., cex=.1, main = "450.1 vs 450.2")
+
+#From the below plot we can see that there is an extra variance at the lower read count values, also known as Poisson noise
+
+```
+This can be assessed visually; the package `vsn` offers a simple function for this.
+```{r}
+par(mfrow=c(1,1))
+# generate the base meanSdPlot using sequencing depth normalized log2(read counts)
+msd_plot <- vsn::meanSdPlot(assay(dds,  "log.norm.counts"), 
+                       ranks=FALSE, # show the data on the original scale
+                       plot = FALSE) # return a ggplot2 object without printing it
+
+# add a title and y-axis label to the ggplot2 object
+msd_plot$gg + 
+  ggtitle("Sequencing depth normalized log2(read counts)") +
+  ylab("standard deviation") 
+```
+
+
+
+Now, We use the variance stablizing transformation method to shrink the sample values for lowly expressed genes with high variance.
+
+There are multiple variance stabilizing algorithms such as vst , rlog. Here we will use vst transformation
+
+```{r}
+# Varaiance Stabilizing transformation
+vsd <- vst(dds, blind = T)
+
+# extract the vst matris from the object
+vsd_mat <- assay(vsd)
+
+# compute pairwise correlation values
+vsd_cor <- cor(vsd_mat)
+
+vsd_cor
+```
+
+Now check 
+```{r}
+
+# the vst-transformed counts are stored in the accessor "assay"
+plot(assay(vsd)[,1],
+     assay(vsd)[,2],
+     cex=.1, main = "vst transformed",
+     xlab = colnames(assay(vsd[,1])),
+     ylab = colnames(assay(vsd[,2])) )
+
+plot(assay(vsd)[,3],
+     assay(vsd)[,4],
+     cex=.1, main = "vst transformed",
+     xlab = colnames(assay(vsd[,3])),
+     ylab = colnames(assay(vsd[,4])) )
+
+
+```
+
+```{r}
+# rlog-transformed read counts
+msd_plot <- vsn::meanSdPlot( assay(vsd), ranks=FALSE, plot = FALSE)
+msd_plot$gg + ggtitle("vst transformation")
+```
+
+
+
+
+Compute correlation values between samples using heatmap
+
+```{r}
+pheatmap(vsd_cor)
+
+#from below plot we can see that 250 days replicates are more similiar than 450 replicates
+```
+#Principal Component Analysis(PCA)
+We perform PCA to check to see how samples cluster and if it meets the experimental design.
+```{r}
+plotPCA(vsd, intgroup = "TYPE")
+
+#FROM BELOW PCA plot it can be seen that the samples formtwo groups as expected and PC1 explain the highest variance in the data.
+```
+
+3.0 Run DGE analysis
+
+We need to ensure that the fold change will be calculated using the control (for us control is 450.1) as the base line.
+`DESeq` used the levels of the condition to determine the order of the comparison.
+
+```{r}
+str(dds$TYPE)
+dds$TYPE <- relevel(dds$TYPE, ref="P_VII")
+str(dds$TYPE)
+```
+
+
+```{r}
+dds <- DESeq(dds)
+```
+
+This one line of code is equivalent to these three lines of code:
+
+```{r eval=FALSE}
+# sequencing depth normalization between the samples
+dds <- estimateSizeFactors(dds) 
+# gene-wise dispersion estimates across all samples
+dds <- estimateDispersions(dds) 
+# this fits a negative binomial GLM and applies Wald statistics to each gene's
+# estimated logFC values comparing the conditions/groups of interest
+dds <- nbinomWaldTest(dds) 
+```
+
+Extract the base means across samples, log2 fold changes, standard errors, 
+test statistics, p-values and adjusted p-values for every gene using `results()`.
+
+```{r}
+resultsNames(dds) # tells you which types of values can be extracted with results()
+
+res <- results(dds,contrast=c("TYPE","P_VII", "P_VI"), independentFiltering = TRUE,alpha = 0.05)
+
+
+head(res) # first line indicates which comparison was done for the log2FC
+summary(res)
+
+# the DESeqResult object can basically be handled like a data.frame
+table(res$padj < 0.05)
+```
+
+plot the fold change over the average expression level of all samples using the MA-plot function.
+```{r}
+plotMA(res, ylim=c(-5,5) )
+```
+In the above plot, highlighted in blue/red are genes which has an adjusted p-values less than 0.1
+
+A adj. p-value histogram:
+
+```{r adjpvalueHistogram}
+hist(res$padj, 
+  col="grey", border="white", xlab="", ylab="",
+  main="frequencies of adj. p-values\n(all genes)")
+```
+
+#Log fold change shrinkage for visualization and ranking
+Shrinkage of effect size (LFC estimates) is useful for visualization and ranking of genes. To shrink the LFC, we pass the dds object to the function  lfcShrink. Below we specify to use the apeglm method for effect size shrinkage (Zhu, Ibrahim, and Love 2018), which improves on the previous estimator.
+
+
+A sorted results table so that we can immediately see which genes come up as the best candidates:
+#Sort summary list by p-value
+```{r}
+res <- res[order(res$padj),]
+head(res)
+```
+
+
+#We can directly see the differential expression of genes by plotting
+```{r}
+par(mfrow=c(2,3))
+
+plotCounts(dds, gene="K03722", intgroup="TYPE")
+plotCounts(dds, gene="K21471", intgroup="TYPE")
+plotCounts(dds, gene="K10108", intgroup="TYPE")
+plotCounts(dds, gene="K08762", intgroup="TYPE")
+
+
+```
+
+
+
+
+#Heatmap
+```{r}
+#Top 20 significent genes
+
+top_20 <- data.frame(normlzd_dds)[1:20,]
+
+colnames(top_20) <- c("250.1", "250.2", "450.1", "450.2")
+
+
+heat_colors <- brewer.pal(6, "YlOrRd")
+
+# Run pheatmap
+pheatmap(top_20,
+        color = heat_colors,
+        cluster_rows = T,
+        show_rownames = T,
+        annotation = dplyr::select(metadata, TYPE),
+        scale = "row",
+        )
+
+```
+
+#To save heatmap
+```{r}
+pheatmap(top_20,
+        color = heat_colors,
+        cluster_rows = T,
+        show_rownames = T,
+        annotation = dplyr::select(metadata, TYPE),
+        scale = "row", cellwidth = 20, cellheight = 12, fontsize = 12, filename = "~/ko_results/top20features.pdf"
+        )
+```
+
+#Save Deseq2 results
+#Here we will only save the p adjusted table
+
+```{r}
+
+write.table (as.data.frame(res), file='~/deseq_0.1padj.tsv', quote=FALSE, sep='\t')
+```
+
+
+
+#For visualization it is beter to use transformation.Here we will use vst transformation
+
+```{r}
+vsddf <- assay(varianceStabilizingTransformation(dds, blind=T))
+
+vsddf <- data.frame(vsddf)
+
+#write.table (as.data.frame(vsddf), file='~/deseq2/vst/vst_results.txt', quote=FALSE, sep='\t')
+
+vsd_20 <- data.frame(vsddf)[1:20,]
+
+colnames(vsd_20) <- c("250.1", "250.2", "450.1", "450.2")
+
+
+heat_colors <- brewer.pal(6, "YlOrRd")
+
+# Run pheatmap
+pheatmap(vsd_20,
+        color = heat_colors,
+        cluster_rows = F,
+        show_rownames = T,
+        annotation = dplyr::select(metadata, TYPE),
+        scale = "row",
+        )
+```
+
+#Now we will subset KOs of interest from the above generated file and see their expression (Use shell for this step)
+
+```{r}
+#Run in shell 
+
+#We will match all KOs related to nitrogen cycle and subset them from the deseq2 results
+
+awk 'NR==FNR { pat[$0]=1 } NR>FNR { for (p in pat) if ($0 ~ p) {print;next} }' ~/ko_map/n2_cycle.txt ~/deseq2/vst/vst_results.txt > ~/deseq2/vst/vst.n2_results.txt
+
+#For genes related to phosphorus cycle
+awk 'NR==FNR { pat[$0]=1 } NR>FNR { for (p in pat) if ($0 ~ p) {print;next} }' ~/ko_map/p_cycle.txt ~/deseq2/vst/vst_results.txt > ~/deseq2/vst/vst.p_results.txt
+
+#Do the same for other genes of interests
+
+```
+
+
+#Generate heatmap
+```{r}
+pc <- read.table('~/vst.p_results.txt', header = TRUE)
+
+#format the dataframe
+rownames(pc) <- pc[,1]
+
+pc <- pc[, -1]
+#pc$gene <- NULL
+
+
+colnames(pc) <- c("250.1", "250.2", "450.1", "450.2")
+
+
+#heatmap
+#heat_colors <- brewer.pal(6, "YlOrRd")
+
+# Run pheatmap
+pheatmap(pc,
+        cluster_rows = F,
+        show_rownames = T,
+        annotation = dplyr::select(metadata, TYPE),
+        scale = "row",
+        )
+
+```
+#Repeat the process for Cazy annotations
+
+
+#4.0 Gene Set Enrichment Analysis (GSEA)
+
+
+#Load packages
+```{r}
+library(magrittr)
+library(clusterProfiler)
+library(enrichplot)
+library(ggplot2)
+library(stringr)
+library(DOSE)
+```
+
+
+# We will use the deseq2 exported results (p adjusted)
+#If you import your data from a csv file, the file should contains two columns, one for gene ID (no duplicated ID allowed) and another one for fold change.
+```{r}
+kegd <- read.table("~/deseq_0.1padj.tsv",
+                      header = TRUE)
+
+colnames(kegd)
+kegg  <- kegd [,-c(2,4,5,6,7)]
+
+head(kegg)
+
+## assume 1st column is ID
+## 3rd column is FC
+
+#feature 1: numeric vector
+geneList <- kegg[,2]
+
+## feature 2: named vector
+names(geneList) <- as.character(kegg[,1])
+
+## feature 3: decreasing order
+geneList <- sort(geneList, decreasing = TRUE)
+
+
+gk <- gseKEGG(geneList, organism="ko", pvalueCutoff = 0.05, minGSSize = 10, nPerm = 10000)
+
+
+head(gk)
+```
+
+#Dotplot
+```{r}
+p1_file <- dotplot(gk, showCategory = 20, title = "Enriched Pathways" , split=".sign") + facet_grid(.~.sign)
+print(p1_file)
+
+```
+
+#Save dotplot
+```{r}
+
+p1 <- paste0("~/gene_enrichment.pdf")
+  ggsave(plot = p1_file, filename = p1, device = "pdf", width = 30, height = 15, 
+         scale = 1, units = "cm" , dpi= 320)
+
+```

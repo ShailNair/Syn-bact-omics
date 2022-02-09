@@ -1,0 +1,390 @@
+---
+title: "Metatranscriptomics"
+output: html_notebook
+---
+
+
+Metatranscriptomics analysis workflow
+
+#Manual analysis
+
+steps
+1.0 Cleaning and removal of host related sequences
+1.2 Remove rRNA sequences via sortmrna
+2.0 Quality check
+3.0 Aseembly
+4.0 ORF prediction
+5.0 Functional analysis
+6.0 Mapping
+7.0 Read counting
+8.0 Merge read cont table to gene funtion table 
+
+
+1.0 Initial Cleaning and removal of host related sequences
+
+```{r}
+conda activate sunbeam
+
+mkdir -p /metatranscriptomics/01.clean_reads/
+
+sunbeam init --data_fp /path/to/fastq/files /path/to/my_project
+
+#the samples should be in fastq.gz form 
+
+sunbeam init --data_fp ~/metatranscriptomics/raw_files ~/metatranscriptomics/1.clean_reads/ --format {sample}.R{rp}.fq.gz
+
+#Configure the configuration file created by sunbeam. check for sample file (sample name should not contain hyphen, space. sample path should be absolute. 
+#sample name and path should match to actual files)
+
+
+
+sunbeam run --configfile ~/metatranscriptomics/1.clean_reads/sunbeam_config.yml all_decontam -k -p --cores 30 --jobs 2
+
+```
+
+
+1.2. remove rRNA sequences via sortmrna
+Using sortmrna, remove ribosomal rna from the decontaminated files
+```{r}
+conda activate sortmerna
+
+mkdir -p ~/metatranscriptomics/02.sortmerna/
+
+cd ~/metatranscriptomics/1.clean_reads/sunbeam_output/qc/decontam
+
+dir > list.txt
+
+
+#rRNA from, bacteria,archea and eukaryotes were removed. Check log at ~/database/sortmerna/data/out for read counts
+
+for SET in `cat list.txt`
+do
+sortmerna -ref ~/database/sortmerna/silva-arc-16s-id95.fasta -ref ~/database/sortmerna/silva-arc-23s-id98.fasta -ref ~/database/sortmerna/silva-bac-16s-id90.fasta -ref ~/database/sortmerna/silva-bac-23s-id98.fasta -ref ~/database/sortmerna/silva-euk-18s-id95.fasta -ref ~/database/sortmerna/silva-euk-28s-id98.fasta -reads $SET.1.fastq.gz -reads $SET.2.fastq.gz -num_alignments 1 -v -workdir ~/metatranscriptomics/2.sortmerna/$SET --other~/metatranscriptomics/2.sortmerna/$SET --fastx --out2 --threads 80
+done
+
+#One common problem while outputing paired end reads is unequal read numbers, which can through error while assembling. To overcome this, lets equalize reads
+
+
+cd ~/metatranscriptomics/2.sortmerna/
+  
+  dir > list.txt
+
+for SET in `cat list.txt`
+do
+fastq_pair $SET.fwd.fastq $SET.rev.fastq
+done
+
+
+#once done the reusult will show the reads in left and right pair-
+
+Left paired: 16224225           Right paired: 16224225
+Left single: 437346             Right single: 398025
+
+The output will be two pair end reads (with evened reads) and single reads from each pair (which has been trimmed off)
+
+
+```
+
+
+#2.0 Quality check
+
+```{r}
+
+conda activate fastqc
+
+mkdir -p ~/metatranscriptomics/03.fastqc
+
+
+#1. cleaned files
+
+cd ~/metatranscriptomics/03.fastqc
+
+for file in ~/metatranscriptomics/01.clean_reads/sunbeam_output/qc/cleaned/*.gz
+do
+  fastqc "$file" -o 1.raw/ -t 50
+done
+
+
+#2. Host removed 
+
+for file in ~/metatranscriptomics/1.clean_reads/sunbeam_output/qc/decontam/*.gz
+do
+  fastqc -t 50 "$file" -o 4.host_removal
+done 
+  
+  
+#3. Sortmrna
+
+for file in ~/metatranscriptomics/02.sortmerna/*.paired.fq
+do
+  fastqc -t 50 "$file" -o 5.sortmerana
+done 
+
+```
+
+#3.0 Assembly
+```{r}
+#Assemble via RNAspades
+
+```{r}
+conda activate Spades
+
+#First merge R1 and R2 reads seperately
+
+
+mkdir -p ~/metatranscriptomics/02.sortmerna/merged 
+
+cd ~/metatranscriptomics/02.sortmerna/merged
+
+cat 250.days.1.fwd.fq 250.days.2.fwd.fq 450.days.1.fwd.fq 450.days.2.fwd.fq > 250.450.merged.r1.fq
+
+cat 250.days.1.rev.fq 250.days.2.rev.fq 450.days.1.rev.fq 450.days.2.rev.fq > 250.450.merged.r2.fq
+
+
+#Assembly
+
+mkdir -p ~/metatranscriptomics/04.assembly
+
+
+~SPAdes/rnaspades.py --pe1-1 250.450.merged.r1.fq --pe1-2 250.450.merged.r2.fq \ 
+-o ~/metatranscriptomics/04.assembly \
+--threads 50
+
+
+#check quality
+
+conda activate quast
+
+cd ~/metatranscriptomics/04.assembly
+  
+mkdir metaquast
+
+
+python ~/quast/bin/metaquast.py  --max-ref-number 0 --output-dir metaquast/transcripts.report transcripts.fasta -t 30
+
+
+```
+
+
+#4.0 Predict ORFS via PRODIGAL
+```{r}
+
+mkdir -p ~/metatranscriptomics/05.orf
+
+conda activate anvio-7
+
+
+prodigal -i transcripts.fasta -o ~/metatranscriptomics/merged/05.orf/250.450.merged.gff -a ~/metatranscriptomics/merged/05.orf/250.450.merged.faa -p meta -f gff
+
+```
+
+
+#5.0 Functional annotation
+```{r}
+##1. GHOSTKOALA
+
+The translated protein files (.faa) were uploaded on GHOSTKOALA web server (https://www.kegg.jp/ghostkoala/) for KO assignment with default settings
+
+Save the resutls as 
+
+~/metatranscriptomics/06.functional_annotation/ghostkoala/250.450_ko.txt
+
+
+#2. EGGNOG-MAPPER
+
+mkdir -p ~/metatranscriptomics/06.functional_annotation/eggnogg
+
+conda activate eggnog-1.0.13
+
+
+#Perform a 2-step (search + annotation) run, using Diamond in more-sensitive mode
+
+emapper.py --data_dir ~/database/eggnog/ \
+-m diamond --sensmode more-sensitive --no_annot \
+-i ~/05.orf/250.450.merged.faa \
+-o ~/metatranscriptomics/06.functional_annotation/eggnogg/250.450.merged-no_annotation \
+--cpu 50
+
+
+#Then run,
+
+emapper.py -m no_search --data_dir ~/database/eggnog/ \
+--annotate_hits_table ~/metatranscriptomics/06.functional_annotation/eggnogg/250.450.merged-no_annotation.emapper.seed_orthologs \
+-o 250.450.merged.eggnogg \
+--output_dir ~/metatranscriptomics/06.functional_annotation/eggnogg/ \
+--dbmem --cpu 50
+
+
+#3. INTERPROSCAN
+
+
+mkdir -p ~/metatranscriptomics/06.functional_annotation/interproscan/input
+
+
+####Interproscan requires the input files without any asterix (*), to remove asterix-
+
+
+cat ~/05.orf/250.450.merged.faa | perl -pe 's/\*//g' > 
+
+~/metatranscriptomics/06.functional_annotation/interproscan/input/250.450.merged.faa
+
+#Run, interproscan
+
+/home/mcs/soft/interproscan-5.47-82.0/interproscan.sh -i ~/metatranscriptomics/06.functional_annotation/interproscan/input/250.450.merged.faa \
+ --output-dir ~/metatranscriptomics/06.functional_annotation/interproscan/ \
+ --formats TSV, GFF3 \
+  -cpu 30 \
+  -iprlookup \
+  -goterms \
+  -pa \
+  -dp
+
+
+
+#4.0 CAZZY
+
+conda activate dbcan
+
+mkdir -p ~/metatranscriptomics/06.functional_annotation/cazy/
+  
+  
+
+run_dbcan.py ~/05.orf/250.450.merged.faa protein  \
+                  --dia_cpu 30 --hmm_cpu 30 --tf_cpu 30 \
+                  --out_dir ~/metatranscriptomics/06.functional_annotation/cazy/ \
+                  --db_dir ~/database/dbcan2 
+
+
+#5.0 ANTISMASH
+
+mkdir -p ~/metatranscriptomics/06.functional_annotation//antismash
+  
+conda activate antismash
+
+
+antismash ~/04.assembly/transcripts.fasta \
+--cb-general --cb-knownclusters --cb-subclusters --asf --pfam2go --genefinding-tool none \
+--genefinding-gff3 ~/05.orf/250.450.merged.gff \
+--output-dir ~/metatranscriptomics/06.functional_annotation//antismash \
+--verbose --cpus 50
+
+```
+
+
+
+#6.0 Mapping
+```{r}
+
+conda activate anvio-7   #(To use bowtie and samtools)
+
+mkdir -p ~/metatranscriptomics/06.mapping/bowtie_index/
+
+
+
+
+#Run the following code to get index files of the assemblled transcript file
+
+
+bowtie2-build ~/metatranscriptomics/04.assembly/transcripts.fasta ~/metatranscriptomics/06.mapping/bowtie_index/250.450.merged --threads 30
+
+
+
+#Now, map these indexed files with the Fastq files
+
+cd ~/metatranscriptomics/02.sortmerna
+
+
+for SET in `cat list.txt`
+do
+bowtie2 --threads 50 -x ~/metatranscriptomics/06.mapping/bowtie_index/250.450.merged \
+-1 $SET.fwd.fastq.paired.fq -2 $SET.rev.fastq.paired.fq \
+-S ~/metatranscriptomics/06.mapping/$SET.sam \
+done
+
+
+#convert sam to bam (-F 4 =DISCARD UNMAPPED) 
+
+
+for SET in `cat list.txt`
+do
+samtools view -F 4 -bS ~/metatranscriptomics/06.mapping/$SET.sam >  ~/metatranscriptomics/06.mapping/$SET.bam -@ 50
+done
+
+#Sort the bam files
+for SET in `cat list.txt`
+do
+samtools sort -@ 50 -o ~/metatranscriptomics/06.mapping/$SET.sorted.bam ~/metatranscriptomics/06.mapping/$SET.bam
+done
+
+#Indexing the sorted bam  files
+
+for SET in `cat list.txt`
+do
+samtools index ~/metatranscriptomics/06.mapping/$SET.sorted.bam -@ 50
+done
+  
+```
+
+
+#7.0 Read counting
+```{r}
+
+mkdir -p ~/metatranscriptomics/07.featurecounts
+
+
+cd ~/metatranscriptomics/06.mapping/
+  
+conda activate subread
+
+featureCounts -T 30 -F gff -p -t CDS -g ID --verbose \
+-a ~/metatranscriptomics/merged/05.orf/250.450.merged.gff \
+-o  ~/metatranscriptomics/07.featurecounts/all.featureCounts.txt \
+250.days.1.sorted.bam 250.days.2.sorted.bam 450.days.1.sorted.bam 450.days.2.sorted.bam
+
+```
+
+
+#8.0 Merge read cont table to gene funtion table 
+```{r}
+we will assign Kegg orthologs (KO) to  ~/metatranscriptomics/07.featurecounts/all.featureCounts.txt table
+
+
+  
+mkdir -p deseq2
+  
+  
+#Add Kegg orthologs to gene-id 
+
+awk '
+NR==FNR {                      
+    a[$1]=$2                    
+    next                       
+}
+{                               
+    print (($1 in a)?a[$1]:$1, $7, $8, $9, $10)  
+}' ~/metatranscriptomics/06.functional_annotation/ghostkoala/250.450_ko.txt   ~/metatranscriptomics/07.featurecounts/all.featureCounts.txt > ~/deseq2/250_450_metaT_ko.txt
+
+
+#Sort the data based on column1 (geneid)
+
+tail -n+2 ~/deseq2/250_450_metaT_ko.txt > deseq2/temp.txt && \
+sort -k1 ~/deseq2/temp.txt > deseq2/250_450_metaT_ko.sorted.txt
+
+
+#check and remove not annotated genes (without ko assignment)
+
+awk 'NF==5' deseq2/250_450_metaT_ko.sorted.txt > ~/deseq2/250_450_metaT_ko.sorted.ko.txt
+
+
+#Sum up same transcripts (duplicate ko)
+
+awk '$1!=p{ if (NR>1) print p, s ,k, m, n; p=$1; s=$0; k=$0; m=$0; n=$0} {s+=$2; k+=$3; m+=$4; n+=$5} END{print p, s, k, m, n}' ~/deseq2/250_450_metaT_ko.sorted.ko.txt > deseq2/250_450_metaT_ko.sum.txt
+
+
+#Run deseq2 in R
+
+```
+
+
+#Follow same For cazy but with cazy annotations
+

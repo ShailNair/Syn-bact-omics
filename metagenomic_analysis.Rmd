@@ -1,0 +1,665 @@
+---
+title: "Syn-bact_metagenomic_analysis"
+output: html_notebook
+---
+
+Metagenomic workflow
+
+
+steps
+
+1. Pre-process (clean data)
+2. Assembly via spades
+3. orf predicton-prodigal
+4. Functional annotation- Ghostkoala/kofamscan, Eggnog, Interproscan, Antismash (secondary metabolite biosynthesis gene), Cazy (carbohydrate)
+5. Binning via metwrap and curation via anvio
+6. Read abundance counting and TPM - featurecounts
+7. Selective function exploration (N-P cycle, vitamin, host adhesion, QS/QQ, Bac. secretory system)
+
+
+#1.0 Pre-processing (trim adapters, low quality reads and host contamination removal)
+
+```{r}
+
+conda activate sunbeam
+
+
+#the samples should be in fq/fastq.gz form 
+sunbeam init --data_fp /path/to/fastq/files /path/to/my_project
+
+sunbeam init --data_fp ~/raw_files  ~/01.clean_reads/ --format {sample}.R{rp}.fq.gz
+
+#This will create cofig.yml and sample files in project directory. Configure the configuration as per your needs. check for sample file (sample name should not contain hyphen, space. sample path should be absolute. sample name and path should match to actual files)
+
+#Here we set configuration to clean adapters (no need to change), remove low quality reads and remove host contamination
+
+
+sunbeam run -- --configfile ~/1.clean_reads/sunbeam_config.yml all_decontam -k -p --cores 20 --jobs 2 -w 90
+
+
+```
+
+
+#1.1 Fastqc
+
+```{r}
+#Check for sequence quality
+
+mkdir -p ~/02.fastqc/
+
+conda activate fastqc
+
+#RAW reads
+
+cd ~/sunbeam_output/qc/decontam/
+
+fastqc Original.bottle.1.clean.R1.fastq.gz Original.bottle.1.clean.R2.fastq.gz Original.bottle.2.clean.R1.fastq.gz Original.bottle.2.clean.R2.fastq.gz suc.culture.100.days.1.clean.R1.fastq.gz suc.culture.100.days.1.clean.R2.fastq.gz suc.culture.100.days.2.clean.R1.fastq.gz suc.culture.100.days.2.clean.R2.fastq.gz suc.culture.250.days.1.clean.R1.fastq.gz suc.culture.250.days.1.clean.R2.fastq.gz suc.culture.250.days.2.clean.R1.fastq.gz suc.culture.250.days.2.clean.R2.fastq.gz suc.culture.400.days.1.clean.R1.fastq.gz suc.culture.400.days.1.clean.R2.fastq.gz suc.culture.400.days.2.clean.R1.fastq.gz suc.culture.400.days.2.clean.R2.fastq.gz suc.culture.450.days.1.clean.R1.fastq.gz suc.culture.450.days.1.clean.R2.fastq.gz suc.culture.450.days.2.clean.R1.fastq.gz suc.culture.450.days.2.clean.R2.fastq.gz -o path_to_directry/02.fastqc/ -t 80
+
+
+```
+
+
+#concatinate files 
+```{r}
+cd ~/sunbeam_output/qc/decontam/
+
+cat *.clean.R1.fastq.gz > all_metag_conconated_R1.fastq.gz
+cat *.clean.R2.fastq.gz > all_metag_conconated_R2.fastq.gz
+
+Also concatinate technical replicates for assembly comparison (not shown here)
+
+```
+
+
+#3.0 Assembly 
+```{r}
+
+mkdir -p ~/03.assembly/
+
+
+conda activate Spades
+
+cd ~/sunbeam_output/qc/decontam/
+  
+
+spades.py --meta --pe1-1 all_metag_conconated_R1.fastq.gz --pe1-2 all_metag_conconated_R2.fastq.gz -t 50 -k 21,33,55,77,99,127 -o ~/03.assembly/
+  
+
+#check quality
+
+conda activate quast
+
+cd ~/03.assembly/
+  
+mkdir metaquast
+
+
+python metaquast.py  --max-ref-number 0 --output-dir metaquast/scaffold.report scaffolds.fasta -t 30   
+  
+  
+
+  
+#3.1 Format scaffold file (convinient for downstream analysis with anvio)
+
+conda activate anvio-7
+
+
+mkdir -p ~/03.assembly/formatted_scaffold/
+
+
+
+anvi-script-reformat-fasta  ~/03.assembly/scaffolds.fasta -o ~/03.assembly/formatted_scaffold/scaffolds-fixed.fa -l 0 --simplify-names
+
+```
+
+
+#4.0 Predict orf/cds
+```{r}
+
+
+mkdir -p ~/04.orf_predict
+
+
+conda activate anvio-7
+
+
+prodigal -i ~/scaffolds-fixed.fa -p meta -o ~/04.orf_predict/scaffolds-fixed.gff -a ~/04.orf_predict/scaffolds-fixed.faa -d ~/04.orf_predict/scaffolds-fixed.fa -f gff
+
+
+```
+
+
+#5.0 Functional annotation
+
+```{r}
+
+#5.1. GHOSTKOALA or Kofamscan (use any one)
+
+#5.1.1 For GHOSTKOALA
+
+#Due to size limitation of GHOSTKOAL (300mb), we split the protein sequence into two
+
+conda activate pyfasta
+
+
+pyfasta split -n 2 scaffolds-fixed.faa  
+  
+#(this will split the .fa sequence file into two)
+
+#Upload it on Ghostkoala server (https://www.kegg.jp/ghostkoala/) for annotation
+
+
+mkdir -p ~/05.Function/ghostkoala
+
+
+#Once done, Transfer both the annotated ko files from ghostkoala to a directory and merge the two annotation file into one-
+
+ 
+
+cat scaffolds-fixed.0_ko.txt scaffolds-fixed.1_ko.txt > scaffolds-fixed.ghostkoala_ko.txt
+
+
+
+#5.2 EGGNOGG
+
+mkdir -p ~/05.Function/eggnog
+
+
+#Perform a 2-step (search + annotation) run, using Diamond in more-sensitive mode
+
+conda activate eggnog-mapper
+
+emapper.py --data_dir ~/database/eggnog/ -m diamond --sensmode more-sensitive --no_annot -i ~/04.orf_predict/scaffolds-fixed.faa -o ~/05.Function/eggnog/scaffolds-fixed_eggnog-no_annotation --cpu 30
+
+#Then run,
+
+emapper.py -m no_search --annotate_hits_table ~/05.Function/eggnog/scaffolds-fixed_eggnog-no_annotation.emapper.seed_orthologs -o scaffolds-fixed.eggnogg --output_dir ~/05.Function/eggnog/ --dbmem --cpu 30 
+
+
+conda deactivate
+
+
+#5.3 #2. INTERPROSCAN
+
+mkdir -p  ~/05.Function/interproscan
+
+
+####Interproscan requires the input files without any asterix (*), If your fasta file have asterix can remove by 
+-
+
+mkdir -p  ~/05.Function/interproscan/input/
+  
+  
+cat ~/04.orf_predict/scaffolds-fixed.faa | perl -pe 's/\*//g' > ~/05.Function/interproscan/input/scaffolds-fixed.faa
+
+
+#Now run interproscan,
+
+
+~/interproscan-5.47-82.0/interproscan.sh -i ~/05.Function/interproscan/input/scaffolds-fixed.faa \
+                    --output-dir ~/05.Function/interproscan/ \
+--formats TSV, GFF3 \
+  -cpu 30 \
+  -iprlookup \
+  -goterms \
+  -pa \
+  -dp
+
+
+
+#5.4 ANTISMASH (For secondary metabolite annotation)
+
+conda activate antismash
+
+
+
+mkdir -p ~/05.Function/antismash/
+
+antismash  ~/scaffolds-fixed.fa --cb-general --cb-knownclusters --cb-subclusters --asf --pfam2go --genefinding-tool none --genefinding-gff3 ~/04.orf_predict/scaffolds-fixed.gff --cpus 30 --output-dir ~/05.Function/antismash/ --verbose
+
+
+
+#5.5 CAZZY
+
+conda activate dbcan
+
+
+mkdir -p ~/05.Function/acazy/
+  
+  
+
+run_dbcan.py ~/04.orf_predict/scaffolds-fixed.faa protein  \
+                  --dia_cpu 30 --hmm_cpu 30 --tf_cpu 30 \
+                  --out_dir ~/05.Function/acazy/ \
+                  --db_dir ~/database/dbcan2
+                 
+```
+
+
+#6.0 Binning via metawrap
+
+```{r}
+#  6.1 Using metabat2,maxbin2 and concoct.
+
+
+mkdir -p ~/06.binning/metawrap
+
+conda activate metawrap
+
+
+cd ~/sunbeam_output/qc/decontam/
+
+
+metawrap binning -o ~/06.binning/metawrap -t 80 -a ~/scaffolds-fixed.fa --metabat2 --maxbin2 --concoct sample.clean_1.fastq.gz sample.clean_2.fastq.gz 
+
+(replace sample in above command with the actual sample name. Mention all samples including the technical replicates)
+
+
+
+
+# 6.1.1 Bin refinement
+#using CheckM and min completion =50, max contamination=10
+~/06.binning/metawrap/refined-bins -t 80 -A ~/06.binning/metawrap/metabat2_bins/ -B /~/06.binning/metawrap/maxbin2_bins/ -C ~/06.binning/metawrap/concoct_bins/ -c 50 -x 10
+
+
+
+#6.2 ANVIO ( Here we use anvio to curate MAGS and summerize MAG info)
+
+
+#anvi’o contigs database
+
+
+mkdir -p ~/06.binning/anvio/01.contigDB  
+  
+conda activate anvio-7
+
+
+anvi-gen-contigs-database -f ~/scaffolds-fixed.fa -o ~/06.binning/anvio/01.contigDB/contigs.db -n 'syn-bact-bins'
+
+
+
+#6.3 Anvio's profile database
+
+
+mkdir -p  ~/06.binning/anvio/02.profileDB  
+ 
+cd ~/06.binning/metawrap/work_files/
+ 
+ 
+dir > list.txt
+#Edit the list to keep only the sample names
+  
+for SET in `cat list.txt`
+do
+anvi-profile -c /06.binning/anvio/01.contigDB/contigs.db \
+-i $SET.clean.bam \
+--num-threads 50 \
+-o  ~/06.binning/anvio/02.profileDB/$SET
+done
+
+
+
+#This will create multiple profile db depending on number of samples. Now we merge these multiple db's into one
+
+cd ~/06.binning/anvio/02.profileDB/
+
+
+anvi-merge -c /06.binning/anvio/01.contigDB/contigs.db \
+            100.days/PROFILE.db 250.days/PROFILE.db 400.days/PROFILE.db 450.days/PROFILE.db original.bottle/PROFILE.db \
+            -o syn-bact-profiledb
+
+
+
+#6.4 Import Ghostkoala annotation to anvio (optional)
+
+#The  ghostkoala output gives genecalls and annotated kegg orthologs (KO). To add function to each KO we use kegg htext file
+
+
+#download the kegg htext file (wget 'https://www.genome.jp/kegg-bin/download_htext?htext=ko00001&format=htext&filedir=' -O ko00001.keg) in the same directory containing the git cloned files (GhostKoalaParser).
+
+mkdir -p ~/0.5functions/ghostkoala/GhostKoalaParser/
+  
+cd ~/0.5functions/ghostkoala/GhostKoalaParser/
+
+wget 'https://www.genome.jp/kegg-bin/download_htext?htext=ko00001&format=htext&filedir=' -O ko00001.keg
+
+#Then paste this command
+
+kegfile="ko00001.keg"
+
+while read -r prefix content
+do
+    case "$prefix" in A) col1="$content";; \
+                      B) col2="$content" ;; \
+                      C) col3="$content";; \
+                      D) echo -e "$col1\t$col2\t$col3\t$content";;
+    esac 
+done < <(sed '/^[#!+]/d;s/<[^>]*>//g;s/^./& /' < "$kegfile") > KO_Orthology_ko00001.txt
+
+#It will create a new file named KO_Orthology_ko00001.txt.
+
+
+
+
+
+#Parse ko annotations to kegg functions
+
+
+
+python ~/KEGG-to-anvio.py --KeggDB ~/GhostKoalaParser/KO_Orthology_ko00001.txt \
+                          -i ~/ghostkoala/scaffolds-fixed.ghostkoala_ko.txt -o ~/ghostkoala/scaffolds-fixed.ghostkoala-KeggAnnotations-AnviImportable.txt
+
+
+#Anvio expects gene_callers_id to be a numerical value. In our case wee need to remove prefix text from each gene_caller_id. To do so-
+
+  
+sed 's/c_//g' 0~/ghostkoala/scaffolds-fixed.ghostkoala-KeggAnnotations-AnviImportable.txt > ~/ghostkoala/scaffolds-fixed.ghostkoala-KeggAnnotations-AnviImportable1.txt
+
+
+#Now import the new txt file with annotated functions into ANVIO. 
+
+
+
+anvi-import-functions -c /06.binning/anvio/01.contigDB/contigs.db \
+                        -i ~/ghostkoala/scaffolds-fixed.ghostkoala-KeggAnnotations-AnviImportable1.txt
+
+
+
+#6.5 Import bin information into ANVIO using anvi-import-collection. metawrap will create this file for you.
+
+
+anvi-import-collection --contigs-mode ~/06.binning/metawrap/refined-bins/metawrap_50_10_bins/metawrap4anvio.tsv -p ~/syn-bact-profiledb/PROFILE.db -c ~/01.contigDB/contigs.db --collection-name Metawrap_50_10
+
+
+
+#6.5 Identifying single-copy core genes
+ we will search our contigs for archaeal and bacterial single-copy core genes. This will be useful later on because
+when we try to disentangle genomes from this metagenome, these single-copy core genes can be good markers for
+how complete your genome is.
+
+anvi-run-hmms -c ~/01.contigDB/contigs.db --num-threads 80
+
+
+
+#optional functional annotation (recommended to compare with kegg annotations)
+
+
+#NCBI's COGs (the database is not uptodate)
+
+anvi-run-ncbi-cogs -c ~/01.contigDB/contigs.db --num-threads 80
+
+
+#PFAM
+anvi-run-pfams -c ~/01.contigDB/contigs.db --num-threads 80
+
+
+#KEGG-KOFAM HMMS (needed if want to use anvio's metabolic pathway determination algorithm)
+
+#GHOSTKOAL uses GHOSTX search (BLAST) against a nonredundant set of KEGG GENES while KOFAMSCAN usis HMM profiles.
+
+
+anvi-run-kegg-kofams -c ~/01.contigDB/contigs.db \
+-T 80 \
+--collection-name Metawrap_50_10 \
+-p ~/02.profileDB/syn-bact-profiledb/PROFILE.db 
+
+
+#assign taxonomy (this is temporary taxonomy assignment. we will use gtdbtk for final taxonomy )
+
+
+anvi-run-scg-taxonomy -c ~/01.contigDB/contigs.db -T 10 -P 5
+                    
+
+#Identify tRNAs (optional)
+anvi-scan-trnas -c ~/01.contigDB/contigs.db --num-threads 50
+
+
+#6.6 Identification and curation of MAGs
+
+we use anvi-rename-bins to (1) filter  bins with >70% completion or >2 Mbp in size and at max 10% redundancy as metagenome-assembled genomes (MAGs), and (2) rename the MAGs and all the remaining bins based on their single-copy gene completion and redundancy values.
+
+
+    anvi-rename-bins -c ~/01.contigDB/contigs.db \
+                     -p ~/02.profileDB/syn-bact-profiledb/PROFILE.db \
+                     --collection-to-read Metawrap_50_10 \
+                     --collection-to-write Metawrap_70_10 \
+                     --call-MAGs \
+                     --min-completion-for-MAG 70 \
+                     --max-redundancy-for-MAG 10 \
+                     --prefix SN\
+                     --report-file Metawrap_70-10_renamed_bins.txt
+
+
+#6.7 SUMMERIZE MAGs RESULTS 
+
+
+    anvi-summarize -c ~/01.contigDB/contigs.db \
+                   -p ~/02.profileDB/syn-bact-profiledb/PROFILE.db \
+                   -C Metawrap_70_10 \
+                   -o  ~/06.binning/anvio/summary/SUMMARY-Metawrap_70_10-metagenomics \
+                  --init-gene-coverages
+
+    
+
+Anvio will create a summary of the bins. Go through it. it will show important information about the bins like completion, redundancy, coverage, N50, Gene call, annotated functions, abundance etc.
+
+
+
+#Determine metabolic pathway completion (via kegg-kofams annotations)
+
+
+
+anvi-estimate-metabolism -c ~/01.contigDB/contigs.db -p ~/02.profileDB/syn-bact-profiledb/PROFILE.db -C Metawrap_70_10 
+
+
+
+#6.8 Assign taxonomy to the bins
+
+# copy all fasta (in anvio summary folder)  to a new directory
+
+mkdir -p ~/06.binning/anvio/bin_taxo/fasta
+
+
+cd ~/0.6anvio/
+
+find summary/SUMMARY-Metawrap_70_10-metagenomics/bin_by_bin -name '*.fa' -exec cp -t ~/06.binning/anvio/bin_taxo/fasta {} +
+
+
+# We will use gtdbtk package to assign taxonomy to our bins
+
+
+conda activate gtdbtk-1.5.0
+
+mkdir -p ~/06.binning/anvio/bin_taxo/gtdbtk
+
+
+gtdbtk classify_wf --genome_dir ~/06.binning/anvio/bin_taxo/fasta --extension fa --out_dir bin_taxo/gtdbtk --cpus 30 --pplacer_cpus 20
+
+
+#check taxonomic from above results
+
+
+#6.9 Phylogenetic tree inference
+
+#The _bac120.user_msa.fasta file from align folder in GTDBTk results is used for tree generation
+
+
+
+#iqtree
+
+mkdir -p ~/bin_taxo/iqtree
+
+cp ~/bin_taxo/gtdbk/align/gtdbtk.bac120.user_msa.fasta ~/bin_taxo/iqtree
+
+
+cd ~/bin_taxo/iqtree
+
+
+conda activate iqtree2
+
+
+iqtree2 -s gtdbtk.bac120.user_msa.fasta -st AA --alrt 1000 -B 1000 -T AUTO
+
+
+#once finish you can use the generated tree in itol.
+
+
+```
+
+
+
+# 7.0 Mapping -Count read numbers of predicted orf
+```{r}
+
+mkdir -p  ~/06.binning/metawrap/7.featurecount 
+
+
+cd ~/metawrap/work_files
+
+
+conda activate subread
+
+
+for SET in `cat list.txt`
+do
+featureCounts -T 30 -F gff -p -t CDS -g ID --verbose \
+-a ~/scaffolds-fixed.gff \
+-o ~/06.binning/metawrap/7.featurecount/$SET.featureCounts.txt \
+$SET.clean.bam
+done
+
+
+# 7.1 Convert raw reads to tpm values
+
+for SET in `cat list.txt`
+do
+Rscript ~/tpm_rpkm.R ~/06.binning/metawrap/7.featurecount/$SET.featureCounts.txt
+done
+
+```
+
+
+# 7.2 Merging tpm file with functional annotation file
+```{r}
+
+#trim extra columns from the tpm file
+
+mkdir -p ~/tpm
+
+#Delete column 2-6
+for SET in `cat list.txt`
+do
+cut -f1-1,7- ~/$SET.featureCounts_tpm.txt > ~/tpm/$SET.featureCounts_tpm.txt
+done
+
+#delete row-1
+for SET in `cat list.txt`
+do
+sed -i '1d' ~/tpm/$SET.featureCounts_tpm.txt
+done
+
+
+#PARSING KO ANNOTATION TABLE (if the gene ids of the featurecount_tpm file and ghostkoala file are different, we need to make it matching)
+
+#Rename genes in ko table TO MATCH WITH THE FEATURESCOUNTS
+
+sed -r 's/^c_0*([0-9]*)/\1/' ~/scaffolds-fixed.ghostkoala_ko.txt > ~/scaffolds-fixed.ghostkoala_ko_1.txt
+
+
+#now we merge the KO table with their TPM values
+
+mkdir ~/06.Function/ghostkoala/ko_tpm/
+  
+#Use awk to map->>match gene-ids->>and make merged table
+
+for SET in `cat list.txt`
+do
+awk 'NR==FNR { map[$1]=$2;next } { map1[$1]=$2 } END { PROCINFO["sorted_in"]="@ind_str_asc";for (i in map) { print i"\t"map[i]"\t"map1[i] } }' ~/ghostkoala/scaffolds-fixed.ghostkoala_ko_1.txt ~/tpm/$SET.featureCounts_tpm.txt > ~/ghostkoala/ko_tpm/$SET.ghostkoala_tpm.txt
+done
+
+
+
+#sort the data based on second column (ko)
+
+mkdir -p ~/ko_tpm/sorted
+
+for SET in `cat list.txt`
+do
+sort -k2 ~/ko_tpm/$SET.ghostkoala_tpm.txt > ~/ko_tpm/sorted/$SET.ghostkoala_tpm.txt
+done
+
+#Remove blank cells (gene_ids without kegg assignments):check and remove lines containing less than 3 strings 
+for SET in `cat list.txt`
+do
+awk 'NF==3' ~/ko_tpm/sorted/$SET.ghostkoala_tpm.txt > ~/ko_tpm/sorted/$SET.ghostkoala_tpm1.txt
+done
+
+#Delete 1st column (gene_ids)
+
+for SET in `cat list.txt`
+do
+ awk '{$1=""}1' ~/ko_tpm/sorted/$SET.ghostkoala_tpm1.txt > ~/ko_tpm/sorted/$SET.ghostkoala_tpm.txt
+done 
+
+
+#Now, Sum up the TPM OF multiple cells of same KO
+
+
+mkdir -p ~/ko_tpm/sorted/summed
+
+
+for SET in `cat list.txt`
+do
+awk '$1!=p{ if (NR>1) print p, s; p=$1; s=0} {s+=$2} END{print p, s}' ~/ko_tpm/sorted/$SET.ghostkoala_tpm.txt > ~/ko_tpm/sorted/summed/$SET.ghostkoala_tpm_summed.txt
+done
+
+
+#Do the same for cazy,antismash, eggnogg and interproscan annotations.
+
+```
+
+
+#8.0 Selective function exploration (important functions involved in  microbial interactions)
+```{r}
+#Here we want to find all the genes with their tpm values for specific functions. For that we need to create a list of ko's and their gene name for specific function/pathway
+#First create a list of all ko and gene name for specific function. Then we map this list with the functional annotation (with tpm) file and extrect matching KOs
+
+
+#For nitrogen cycle
+
+mkdir -p ~/selective_funct/nitrogen_ko/
+
+for SET in `cat list.txt`
+do
+awk 'FNR==NR { map[$1]=$2;next } { map1[$1]=$2 } END { PROCINFO["sorted_in"]="@ind_str_asc";for (i in map) { print i"\t"map[i]"\t"map1[i] } }' ~/nitrogen_ko.txt ~/ko_tpm/sorted/summed/$SET.ghostkoala_tpm_summed.txt > ~/selective_funct/nitrogen_ko/$SET-nitrogen.txt
+done
+
+
+#To join the resultant files
+
+cd ~/selective_funct/nitrogen_ko/
+
+
+join  original.bottle.1.nitrogen.txt original.bottle.2.nitrogen.txt| join - 100.days.1.nitrogen.txt | join - 100.days.2.nitrogen.txt | join - 250.days.1.nitrogen.txt | join - 250.days.2.nitrogen.txt | join - 400.days.1.nitrogen.txt | join - 400.days.2.nitrogen.txt | join - 450.days.1.nitrogen.txt | join - 450.days.2.nitrogen.txt > all.merged.nitrogen.txt
+
+
+
+#Phosphorus cycle
+
+mkdir -p ~/selective_funct/phosphorus_ko
+
+
+for SET in `cat list.txt`
+do
+awk 'FNR==NR { map[$1]=$2;next } { map1[$1]=$2 } END { PROCINFO["sorted_in"]="@ind_str_asc";for (i in map) { print i"\t"map[i]"\t"map1[i] } }' ~/phosphorus_ko.txt ~/ko_tpm/sorted/summed/$SET.ghostkoala_tpm_summed.txt > ~/selective_funct/phosphorus_ko/$SET.phosphorus.txt
+done
+
+
+#Then join the files
+
+#Repeat the above for vitamin, bacterial secretory system,quorum sensing and biofilm_formation gene sets.
+
+```
+
+
+
