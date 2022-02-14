@@ -1,0 +1,7 @@
+K13924	cheBR
+K00575	cheR
+K03413	cheY
+K03412	cheB
+K03406	mcp
+K03407	cheA
+K03415	cheV
