@@ -3,3 +3,10 @@ This is a reproducible workflow used for 16s amplicon, nif-H amlicon, metagenomi
 All the packages used here are the works of their respective developers and contributors and are duly cited in the main manuscript. 
 
 We claim no rights on any package used here.
+
+
+TPM calculations were done using the script provided by Andy Saurin https://github.com/andysaurin/tpm_rpkm with a slight modification in the code.
+
+https://github.com/edgraham/GhostKoalaParser
+
+kegg_to_anvio script used to parse ghostkoala annotations into ANVIO environment was provided by Elaina Graham https://github.com/edgraham/GhostKoalaParser
