@@ -33,13 +33,13 @@ set.seed(0168)
 #Setup directories,fastq files, identify triming parameters
 # 2.1 Assign directories
 ```{r}
-fastq_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/raw_files"  # fastq directory
-filtN_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq/filtN/" #Filter Ns
-cutadapt_trimmed_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq/cutadapt_trimmed/"
-filtered_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq_filtered/"  # fastq filtered
-qual_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/qual_pdf/"  # qual pdf
-dada2_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/"  # dada2 results
-database_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/"  # databases
+fastq_dir <- "~/Documents/16s_analysis/raw_files"  # fastq directory
+filtN_dir <- "~/Documents/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq/filtN/" #Filter Ns
+cutadapt_trimmed_dir <- "~/Documents//16s_analysis/fastq/cutadapt_trimmed/"
+filtered_dir <- "~/Documents/16s_analysis/fastq_filtered/"  # fastq filtered
+qual_dir <- "~/Documents/16s_analysis/qual_pdf/"  # qual pdf
+dada2_dir <- "~/Documents/16s_analysis/dada2/"  # dada2 results
+database_dir <- "~/Documents/16s_analysis/databases/"  # databases
 ```
 
 ## 2.1.1 Create directory (skip if already created)** 
@@ -390,13 +390,13 @@ write.table(data.frame(track), "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-
 ## 4.7.0 Assigning taxonomy
 
 ```{r}
-db_file <- paste0("/home/ahail/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/silva_nr99_v138.1_train_set.fa.gz")
+db_file <- paste0("~/Documents/16s_analysis/databases/silva_nr99_v138.1_train_set.fa.gz")
 taxa <- assignTaxonomy(seqtab.nochim, refFasta = db_file, multithread=TRUE)
 ``` 
 
 # 4.7.1 Assign species and save Rdata
 ```{r}
-taxa <- addSpecies(taxa, "/home/ahail/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/silva_species_assignment_v138.1.fa.gz")
+taxa <- addSpecies(taxa, "~/Documents/16s_analysis/databases/silva_species_assignment_v138.1.fa.gz")
 
 saveRDS(taxa, str_c(dada2_dir, "pcc-bacteria_initial.taxa.rds"))
 ``` 
@@ -427,24 +427,24 @@ write(asv_fasta, str_c(dada2_dir, "ASVs.fa"))
 ```{r}
 asv_tab <- t(seqtab.nochim)
 row.names(asv_tab) <- sub(">", "", asv_headers)
-write.table(asv_tab, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
+write.table(asv_tab, "~/Documents/16s_analysis/dada2/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
 ```
 
 # tax table
 ```{r}
 asv_tax <- taxa
 row.names(asv_tax) <- sub(">", "", asv_headers)
-write.table(asv_tax, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/ASVs_taxonomy.tsv", sep = "\t", quote=F, col.names=NA)
+write.table(asv_tax, "~/Documents/16s_analysis/dada2/ASVs_taxonomy.tsv", sep = "\t", quote=F, col.names=NA)
 ```
 
 # To merge asv abundance and taxonomy into one file
 ```{r}
 OTU_TAX_table <- merge(asv_tab, asv_tax, by=0)
-write.table(OTU_TAX_table, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/OTU_TAX_table.tsv", sep = "\t", quote=F, col.names=NA)
+write.table(OTU_TAX_table, "~/Documents/16s_analysis/dada2/OTU_TAX_table.tsv", sep = "\t", quote=F, col.names=NA)
 ```
 
 ## 4.9 save rdata
 
 ```{r}
-save.image(file="~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/16s_anaysis.RData") 
+save.image(file="~/Documents/16s_analysis/16s_anaysis.RData") 
 ``` 
