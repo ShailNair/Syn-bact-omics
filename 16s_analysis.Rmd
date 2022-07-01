@@ -1,0 +1,450 @@
+---
+title: "16s_dada2"
+author: "SHAIL"
+output: html_document
+---
+
+# 1.1 Load packages**
+```{r, include=FALSE}
+library("dada2")
+library("phyloseq")
+library("Biostrings")
+library("ggplot2")
+library("ggpubr")
+library("dplyr")
+library("tidyr")
+library("tibble")
+library("readxl")
+library("readr")
+library("stringr")
+library("kableExtra")
+library("Biostrings")
+library("stringr")
+library("ShortRead")
+
+
+#Set seed
+sessionInfo()
+set.seed(0168)
+
+```
+
+## 2.0 Initial setup**
+#Setup directories,fastq files, identify triming parameters
+# 2.1 Assign directories
+```{r}
+fastq_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/raw_files"  # fastq directory
+filtN_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq/filtN/" #Filter Ns
+cutadapt_trimmed_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq/cutadapt_trimmed/"
+filtered_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/fastq_filtered/"  # fastq filtered
+qual_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/qual_pdf/"  # qual pdf
+dada2_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/"  # dada2 results
+database_dir <- "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/"  # databases
+```
+
+## 2.1.1 Create directory (skip if already created)** 
+
+```{r}
+dir.create(fastq_dir)
+dir.create(filtN_dir)
+dir.create(cutadapt_trimmed_dir)
+dir.create(filtered_dir)
+dir.create(qual_dir)
+dir.create(dada2_dir)
+dir.create(database_dir)
+```
+
+# (Manually load your fastq files in fastq directory. check for names and extenision and change accordingly in the next step)
+
+## 2.2 Examine the fastQ files**
+
+# It is assumed that the sample names are at the start of file name and separated by . e.g. xxxx.R1.fastq.gz
+# To get a list of all fastq files and separate R1 and R2
+
+```{r}
+fns <- sort(list.files(fastq_dir, full.names = TRUE))
+fns <- fns[str_detect(basename(fns), ".fastq.gz")]
+fns_R1 <- fns[str_detect(basename(fns), "R1")]
+fns_R2 <- fns[str_detect(basename(fns), "R2")]
+```
+
+# 2.2.1 Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fq**
+
+```{r}
+sample.names <- str_split(basename(fns_R1), pattern = "_", simplify = TRUE)
+sample.names <- sample.names[,1]
+```
+
+# 2.2.2 Compute number of paired reads
+
+# create an empty data frame
+```{r}
+df <- data.frame()
+```
+# loop through all the R1 files (no need to go through R2 which should be
+# the same)
+```{r}
+for (i in 1:length(fns_R1)) {
+    
+    # use the dada2 function fastq.geometry
+    geom <- fastq.geometry(fns_R1[i])
+    
+    # extract the information on number of sequences and file name
+    df_one_row <- data.frame(n_seq = geom[1], file_name = basename(fns[i]))
+    
+    # add one line to data frame
+    df <- bind_rows(df, df_one_row)
+}
+# display number of sequences and write data to small file
+kable(df)%>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+
+# 2.3 Identify primers (change primer sequence according to your sequencing)**
+
+```{r}
+FWD <- "TACGGRAGGCAGCAG"  ## CHANGE ME to your forward primer sequence
+REV <- "AGGGTATCTAATCCT"  ## CHANGE ME to your reverse primer sequence
+```
+
+# To ensure we have the right primers, and the correct orientation of the primers on the reads, 
+# we will verify the presence and orientation of these primers in the data.
+
+```{r}
+allOrients <- function(primer) {
+  # Create all orientations of the input sequence
+  require(Biostrings)
+  dna <- DNAString(primer)  # The Biostrings works w/ DNAString objects rather than character vectors
+  orients <- c(Forward = dna, Complement = complement(dna), Reverse = reverse(dna), 
+               RevComp = reverseComplement(dna))
+  return(sapply(orients, toString))  # Convert back to character vector
+}
+FWD.orients <- allOrients(FWD)
+REV.orients <- allOrients(REV)
+FWD.orients
+```
+
+## 3.0 Primer trimming**
+
+#The presence of ambiguous bases (Ns) in the sequencing reads makes accurate mapping of short primer sequences difficult. 
+#Next we are going to “pre-filter” the sequences just to remove those with Ns, but perform no other filtering.
+#multithread = FALSE for windows OS.
+
+```{r}
+fns_R1.filtN <- str_c(filtN_dir,  sample.names, "_R1_filtN.fq.gz")  # Put N-filterd files in filtN/ subdirectory
+fns_R2.filtN  <- str_c(filtN_dir, sample.names, "_R2_filtN.fq.gz")
+```
+
+```{r}
+out <- filterAndTrim(fns_R1, fns_R1.filtN, fns_R2, fns_R2.filtN, maxN = 0, multithread = TRUE)
+```
+
+# To count the number of times the primers appear in the forward and reverse read, while considering all possible  primer orientations. 
+# Identifying and counting the primers on one set of paired end FASTQ files is sufficient, 
+# assuming all the files were created using the same library preparation, so we’ll just process the first sample.
+
+```{r}
+primerHits <- function(primer, fn) {
+  # Counts number of reads in which the primer is found
+  nhits <- vcountPattern(primer, sread(readFastq(fn)), fixed = FALSE)
+  return(sum(nhits > 0))
+}
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fns_R1.filtN [[1]]), 
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fns_R2.filtN [[1]]), 
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fns_R1.filtN [[1]]), 
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fns_R2.filtN [[1]]))
+```
+
+# The output will show if any of the primers present  in forward and reverse reads. If yes, then do primer trimming either by cutadapt or DADA2's inbuilt trimmer (Cutadapt is preffered to accurately trim all primer sequences).
+
+## 3.1 Primer trimming using Cutadapt**
+
+#Install cutadapat if you don’t have it already. After installing cutadapt, we need to tell R the path to the cutadapt command.
+
+```{r}
+cutadapt <- "/usr/local/bin/cutadapt" # CHANGE ME to the cutadapt path on your machine
+system2(cutadapt, args = "--version") # Run shell commands from R
+```
+
+#If the above command succesfully executed it will show cutadapt version, R has found cutadapt and you are ready to for triiming..
+
+#We now create output filenames for the cutadapt-ed files, and define the parameters we are going to give the cutadapt command. 
+#The critical parameters are the primers, and they need to be in the right orientation, i.e. the FWD primer should have been matching the forward-reads in its forward orientation, and the REV primer should have been matching the reverse-reads in its forward orientation.
+```{r}
+path.cut <- (cutadapt_trimmed_dir)
+fns_R1.cut <- file.path(path.cut, basename(fns_R1))
+fns_R2.cut <- file.path(path.cut, basename(fns_R2))
+```
+
+```{r}
+FWD.RC <- dada2:::rc(FWD)
+REV.RC <- dada2:::rc(REV)
+# Trim FWD and the reverse-complement of REV off of R1 (forward reads)
+R1.flags <- paste("-g", FWD, "-a", REV.RC) 
+# Trim REV and the reverse-complement of FWD off of R2 (reverse reads)
+R2.flags <- paste("-G", REV, "-A", FWD.RC) 
+# Run Cutadapt
+for(i in seq_along(fns_R1)) {
+  system2(cutadapt, args = c(R1.flags, R2.flags, "-n", 2, # -n 2 required to remove FWD and REV from reads
+                             "-o", fns_R1.cut[i], "-p", fns_R2.cut[i], # output files
+                             fns_R1.filtN[i], fns_R2.filtN[i])) # input files
+}
+```
+
+#check again if the primers have been trimmed off or not
+
+```{r}
+rbind(FWD.ForwardReads = sapply(FWD.orients, primerHits, fn = fns_R1.cut[[1]]), 
+      FWD.ReverseReads = sapply(FWD.orients, primerHits, fn = fns_R2.cut[[1]]), 
+      REV.ForwardReads = sapply(REV.orients, primerHits, fn = fns_R1.cut[[1]]), 
+      REV.ReverseReads = sapply(REV.orients, primerHits, fn = fns_R2.cut[[1]]))
+```
+
+#The primer-free sequence files are now ready to be analyzed through the DADA2 pipeline. Similar to the earlier steps of reading in FASTQ files, we read in the names of the cutadapt-ed FQ files and applying some string manipulation to get the matched lists of forward and reverse fastq files.
+
+# Forward and reverse fq filenames have the format:
+```{r}
+fns_cut <- sort(list.files(cutadapt_trimmed_dir, full.names = TRUE))
+fns_cut <- fns[str_detect(basename(fns), "fastq.gz")]
+cut_R1 <- fns[str_detect(basename(fns), "R1")]
+cut_R2 <- fns[str_detect(basename(fns), "R2")]
+```
+
+# Extract sample names, assuming filenames have format:
+
+```{r}
+get.sample.name <- function(fname) strsplit(basename(fname), "_")[[1]][1]
+sample.names <- unname(sapply(cut_R1, get.sample.name))
+head(sample.names)
+```
+
+# 2.4 Plot quality for reads**
+
+```{r}
+for (i in 1:length(fns_cut)) {
+  
+  # Use dada2 function to plot quality
+  p1 <- plotQualityProfile(fns_cut[i])
+  
+  # Only plot on screen for first 2 files
+  if (i <= 2) {
+    print(p1)
+  }
+  
+  # save the file as a pdf file (uncomment to execute)
+  p1_file <- paste0(qual_dir, basename(fns[i]), ".qual.pdf")
+  ggsave(plot = p1, filename = p1_file, device = "pdf", width = 15, height = 15, 
+         scale = 1, units = "cm")
+}
+```
+
+# The quality profile plot is a gray-scale heatmap of the frequency of each quality score at each base position. 
+# The median quality score at each position is shown by the green line,and the quartiles of the quality score distribution by the orange lines. X-AXIS shows reads length and Y-AXIS shows quality score. Check the point at which the quality of the grpah detoriates (generally,less than 30 q score), this will be the truncation length in next step. check for both R1 and R2 files.
+
+## 3.0 Filter and Trim the reads**
+
+# 3.1 Place filtered files in filtered/ subdirectory**
+
+```{r}
+filt_R1 <- file.path(filtered_dir, paste0(sample.names, "R1_filt.fq.gz"))
+filt_R2 <- file.path(filtered_dir, paste0(sample.names, "R2_filt.fq.gz"))
+names(filt_R1) <- sample.names
+names(filt_R2) <- sample.names
+```
+
+
+#Set trunclen=c ()according to quality profiles from above graph. Note that truncation length should be +20 then your amplicon length. For illumina v3-v4 the amplicon length is ~460 bp i.e.truncation lengths will be 480+ (both reads summed up). trimLeft=c() is only for primer removal, change value according to your primer length(nt), or remove the group if primer is already removed from the fq files.Other parameters can be kept default (unless you get abnormal results).
+#Be careful while setting trunclength, Consider your sequenced amplicon length. The summed up truncation length of R1 and R2 should should be exect or a bit more than expected amplicon length.
+
+```{r}
+out <- filterAndTrim(cut_R1, filt_R1, cut_R2, filt_R2,truncLen=c(245,230),
+                     maxN=0, maxEE=c(5,4), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE,multithread=TRUE)
+head(out)
+```
+
+#The output will show the number of reads in and reads out.  Check for reads out (filtered reads), if the number is very less (less than 50%), then ypu need to r-visit the fiter and trim parametrs. For a normal sequence a loss of 20-40% is acceptable. Finally, it depends on the quality of sequnced files and filter and trim parameters applied. 
+
+## 4.0 Dada2 processing**
+
+# 4.1 learn error rates**
+
+```{r}
+err_R1 <- learnErrors(filt_R1, multithread = TRUE)
+
+plotErrors(err_R1, nominalQ = TRUE)
+``` 
+
+```{r}
+err_R2 <- learnErrors(filt_R2, multithread = TRUE)
+
+plotErrors(err_R2, nominalQ = TRUE)
+``` 
+
+# Check for plots Red line=expected error rate according to  nominal definition of the Q-score, Black line=expected error rate from machine learning, black dotes= observed error rates. Check whetherthe black line reasonably fit the observations (black points)? it will not be perfect fit, a good fit is what we look. Secondly, check if the error rate decreses with increase in quality score. If both clauses are passed, we are ready to move forward.
+
+# If you get Warning message:Transformation introduced infinite values in continuous y-axis This isn't an error, just a message from the plotting function to let you know that there were some zero values in the data plotted (which turn into infinities on the log-scale).That is completely expected. $\color{red}{\text{beautiful red}}$, 
+
+# 4.2 Sample Inference**
+
+# The core algorithm that will identify the real variants. Pooling is a method where in sample information (ASV's) from one sample is shared with all other samples so, as to get bettr finer results. Especially, works best  with samples having high microbial density with many rare ASV's. Can use POOL=FALSE, pool=TRUE, pool=pseudo Try with pool=TRUE first.You may get better results but will take longer time and RAM. If get memory error go for pool=pseudo. IF still get memory error Than either use a high performing computer or use POOL=FALSE
+
+# Now, using our trimmed sequence and machine learnt error rate, we will find sequence variants.
+
+# First with forward (R1) sequences.
+
+```{r}
+dada_R1 <- dada(filt_R1, err=err_R1, multithread=TRUE,pool = TRUE)
+```
+
+# Then, with reverse (R2) sequences.
+
+```{r}
+dada_R2 <- dada(filt_R2, err = err_R2, multithread = TRUE, pool = TRUE)
+```
+
+# Inspecting the returned dada-class object:denoising results
+
+```{r}
+dada_R1[[1]]
+```
+
+```{r}
+dada_R2[[1]]
+```
+
+# 4.3 Merge paired reads**
+# We now merge the forward and reverse reads together to obtain the full denoised sequences. 
+# By default, merged sequences are only output if the forward and reverse reads overlap by at least 12 bases, and are identical to each other in the overlap region.
+
+```{r}
+mergers <- mergePairs(dada_R1, filt_R1, dada_R2, filt_R2, verbose=TRUE)
+```
+
+# 4.4 Build Sequence table (ASV's)**
+# construct an amplicon sequence variant table (ASV) table, a higher-resolution version of the OTU table produced by traditional methods.
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+
+dim(seqtab)
+```
+
+# 4.5 Remove chimeras
+
+# Note that remove chimeras will produce spurious results if primers have not be removed.The parameter methods can be "pooled" (if samples were pooled in sample inference step) or "consensus".“consensus” does de novo identification in each sample, takes a vote across samples, and removes all ASVs identified as chimeras in a high enough fraction of the samples in which they were present. “pooled” just lumps all ASVs in the data into one big sample, and identifies and removes chimeras. “consensus” performs better for typical datasets/workflows.
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+```
+###minFoldParentOverAbundance can be changed if most reads are removed as chimeric
+
+#Inspect distribution of sequence lengths
+
+```{r}
+table(nchar(getSequences(seqtab.nochim)))
+```
+# The sequence table is a matrix with rows corresponding to (and named by) the samples,and columns corresponding to (and named by) the sequence variants. The lengths of our merged sequences Should all fall within the expected range (length) of our source amlicon.
+
+# OPTIONAL:Sequences that are much longer or shorter than expected may be the result of non-specific priming.You can remove non-target-length sequences from your sequence table by-
+
+# seqtab2 <- seqtab[, nchar(colnames(seqtab)) %in% seq(400, 480)]
+
+#(400, 480) is the range of targeted amplicon length. Change according to your amlicon length.
+
+# To check Percent of non-chimeras
+
+```{r}
+paste0("% of non chimeras : ", sum(seqtab.nochim)/sum(seqtab) * 100)
+```
+# To check total number of sequences
+
+```{r}
+paste0("total number of sequences : ", sum(seqtab.nochim))
+```
+
+# 4.6 Track number of reads at each step
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dada_R1, getN), sapply(dada_R2, getN), sapply(mergers, 
+                                                                       getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", 
+                     "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+#Get tabled output
+```{r}
+kable(track) %>%
+  kable_styling(bootstrap_options = c("striped", "hover"))
+```
+# Apart from filtering (depending on how stringent you want to be) there should no step in which a majority of reads are lost. If a majority of reads were removed as chimeric, you may need to revisit the removal of primers, as the ambiguous nucleotides in unremoved primers interfere with chimera identification. If a majority of reads failed to merge, the culprit could also be unremoved primers, but could also be due to biological length variation in the sequenced ITS region that sometimes extends beyond the total read length resulting in no overlap.
+
+
+#3.4.3 Save table to a file
+```{r}
+tf<- data.frame(track)
+write.table(data.frame(track), "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/read_numbers_dada2.tsv", sep="\t", quote=F, col.names=NA)
+```
+
+## 4.7.0 Assigning taxonomy
+
+```{r}
+db_file <- paste0("/home/ahail/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/silva_nr99_v138.1_train_set.fa.gz")
+taxa <- assignTaxonomy(seqtab.nochim, refFasta = db_file, multithread=TRUE)
+``` 
+
+# 4.7.1 Assign species and save Rdata
+```{r}
+taxa <- addSpecies(taxa, "/home/ahail/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/databases/silva_species_assignment_v138.1.fa.gz")
+
+saveRDS(taxa, str_c(dada2_dir, "pcc-bacteria_initial.taxa.rds"))
+``` 
+
+# To view the assigned taxonomy 
+
+```{r}
+ #View(taxa)
+``` 
+
+#4.8 Save results from DADA2
+
+# giving our seq headers more manageable names (ASV_1, ASV_2...)
+
+```{r}
+asv_seqs <- colnames(seqtab.nochim)
+asv_headers <- vector(dim(seqtab.nochim)[2], mode="character")
+
+for (i in 1:dim(seqtab.nochim)[2]) {
+  asv_headers[i] <- paste(">ASV", i, sep="_")
+}
+  # making and writing out a fasta of our final ASV seqs:
+asv_fasta <- c(rbind(asv_headers, asv_seqs))
+write(asv_fasta, str_c(dada2_dir, "ASVs.fa"))
+```
+
+# ASV count table:
+```{r}
+asv_tab <- t(seqtab.nochim)
+row.names(asv_tab) <- sub(">", "", asv_headers)
+write.table(asv_tab, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/ASVs_counts.tsv", sep="\t", quote=F, col.names=NA)
+```
+
+# tax table
+```{r}
+asv_tax <- taxa
+row.names(asv_tax) <- sub(">", "", asv_headers)
+write.table(asv_tax, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/ASVs_taxonomy.tsv", sep = "\t", quote=F, col.names=NA)
+```
+
+# To merge asv abundance and taxonomy into one file
+```{r}
+OTU_TAX_table <- merge(asv_tab, asv_tax, by=0)
+write.table(OTU_TAX_table, "~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/dada2/OTU_TAX_table.tsv", sep = "\t", quote=F, col.names=NA)
+```
+
+## 4.9 save rdata
+
+```{r}
+save.image(file="~/Documents/amplicon_seq_DADA2/syn-bacteria-phd-work/16s_analysis/syn-bact-reanalysis-2022-sci-adv/16s_anaysis.RData") 
+``` 
