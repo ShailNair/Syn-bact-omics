@@ -7,7 +7,6 @@ output: html_document
 # 1.0 Load packages**
 ```{r, results='hide', message=FALSE}
 library("dada2")
-library("phyloseq")
 library("Biostrings")
 library("ggplot2")
 library("kableExtra")
@@ -321,11 +320,19 @@ seqtab <- makeSequenceTable(mergers)
 dim(seqtab)
 ```
 
+# OPTIONAL:Sequences that are much longer or shorter than expected may be the result of non-specific priming.You can remove non-target-length sequences from your sequence table by-
+
+#(240, 380) is the range of targeted amplicon length. Change according to your amlicon length.
+
+```{r}
+seqtab <- seqtab[, nchar(colnames(seqtab)) %in% seq(240, 380)]
+```
+
 # 4.5 Remove chimeras
 
 # Note that remove chimeras will produce spurious results if primers have not be removed.The parameter methods can be "pooled" (if samples were pooled in sample inference step) or "consensus".“consensus” does de novo identification in each sample, takes a vote across samples, and removes all ASVs identified as chimeras in a high enough fraction of the samples in which they were present. “pooled” just lumps all ASVs in the data into one big sample, and identifies and removes chimeras. “consensus” performs better for typical datasets/workflows.
 
-#note- first run "seqtab.nochim" with minFoldParentOverAbundance = 2 (default), see the percent of non chimeras. if a lot of reads are removed as chimeras and you are sure that your reads completely cleaned of primers then try increasing  minFoldParentOverAbundance = 16. Finally, if you are not satisfied with the results, you can always, start again making sure to use cleaned reads.
+#note- first run "seqtab.nochim" with minFoldParentOverAbundance = 1 (default), see the percent of non chimeras. if a lot of reads are removed as chimeras and you are sure that your reads completely cleaned of primers then try increasing  minFoldParentOverAbundance = 2,4,6, or 8. Finally, if you are not satisfied with the results, you can always, start again making sure to use cleaned, quality reads.
 ```{r}
 seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE, minFoldParentOverAbundance = 2)
 ```
@@ -337,22 +344,9 @@ table(nchar(getSequences(seqtab.nochim)))
 ```
 # The sequence table is a matrix with rows corresponding to (and named by) the samples,and columns corresponding to (and named by) the sequence variants. The lengths of our merged sequences Should all fall within the expected range (length) of our source amlicon.
 
-# OPTIONAL:Sequences that are much longer or shorter than expected may be the result of non-specific priming.You can remove non-target-length sequences from your sequence table by-
-
-# seqtab2 <- seqtab[, nchar(colnames(seqtab)) %in% seq(400, 470)]
-
-#(400, 470) is the range of targeted amplicon length. Change according to your amlicon length.
-
-```{r}
-seqtab2 <- seqtab[, nchar(colnames(seqtab)) %in% seq(240, 380)]
-
-seqtab.nochim <- removeBimeraDenovo(seqtab2, method="consensus", multithread=TRUE, verbose=TRUE, minFoldParentOverAbundance = 2)
-```
-
 ```{r}
 table(nchar(getSequences(seqtab.nochim)))
 ```
-
 
 # To check Percent of non-chimeras
 
@@ -424,7 +418,6 @@ bootstrap_minc <- 50
 
   seqtab.nochim_boot50 <- seqtab.nochim_boot80 %>% dplyr::filter(Class_boot >= 
     bootstrap_minc)
-
 ```
 
 #4.8 Save results from DADA2
